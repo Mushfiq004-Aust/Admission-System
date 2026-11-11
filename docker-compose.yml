@@ -1,0 +1,87 @@
+# Starts the WHOLE project (PostgreSQL + backend API + frontend):
+#
+#     docker compose up --build
+#
+#   Students -> http://localhost:3000          (parents / guardians)
+#   Admin    -> http://localhost:3000/admin    (school staff: login from the .env settings, default admin / admin123)
+#   Backend  -> http://localhost:8080          (Swagger is off in Docker; try /health and /classes)
+#
+#   docker compose down       stop everything (database data is KEPT in the named volume "pgdata")
+#   docker compose down -v    stop everything AND delete the database data
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: school_admission
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      # Named volume: survives `docker compose down`. Only `down -v` deletes it.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d school_admission"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    image: school-admission-backend:local
+    restart: unless-stopped
+    environment:
+      # Database connection (host "db" is the service name above; it only exists inside Docker).
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=school_admission;Username=postgres;Password=postgres;Maximum Pool Size=40"
+      # How long a seat is held, in seconds (assignment default: 600 = 10 minutes).
+      HOLD_DURATION_SECONDS: "${HOLD_DURATION_SECONDS:-600}"
+      # Admin login (school staff). Change these in a .env file next to this file (see .env.example).
+      # The values after ":-" are DEMO defaults so that `docker compose up --build` works out of the box.
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123}"
+      # Secret used to sign admin login tokens (at least 32 characters).
+      JWT_SECRET: "${JWT_SECRET:-docker-demo-secret-change-me-0123456789abcdef}"
+      JWT_EXPIRY_MINUTES: "${JWT_EXPIRY_MINUTES:-60}"
+      # Which website addresses may call the API (CORS).
+      Frontend__Url: "http://localhost:3000"
+      ASPNETCORE_URLS: "http://0.0.0.0:8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      # Backend address as seen from the BROWSER on your computer (not a Docker-internal name).
+      VITE_API_BASE_URL: "${VITE_API_BASE_URL:-http://localhost:8080}"
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # OPTIONAL BONUS: a second backend process on port 8081 using the SAME database.
+  #   docker compose --profile bonus up --build
+  #   node loadtest/multi-instance-test.mjs
+  backend2:
+    image: school-admission-backend:local
+    profiles: ["bonus"]
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=school_admission;Username=postgres;Password=postgres;Maximum Pool Size=40"
+      HOLD_DURATION_SECONDS: "${HOLD_DURATION_SECONDS:-600}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123}"
+      JWT_SECRET: "${JWT_SECRET:-docker-demo-secret-change-me-0123456789abcdef}"
+      JWT_EXPIRY_MINUTES: "${JWT_EXPIRY_MINUTES:-60}"
+      Frontend__Url: "http://localhost:3000"
+      ASPNETCORE_URLS: "http://0.0.0.0:8080"
+    ports:
+      - "8081:8080"
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  pgdata:
