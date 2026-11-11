@@ -1,0 +1,55 @@
+# Runs the automated backend tests against a REAL, throw-away PostgreSQL (data lives in RAM).
+#
+#   docker compose -f docker-compose.test.yml run --rm tests            <- backend tests, no .NET needed
+#   docker compose -f docker-compose.test.yml run --rm frontend-tests   <- frontend tests, no Node needed
+#   docker compose -f docker-compose.test.yml down                <- clean up afterwards
+#
+# (If you have the .NET 8 SDK and want to run `dotnet test` yourself, start only the database:
+#   docker compose -f docker-compose.test.yml up -d db-test
+# and set TEST_DB_CONNECTION to  Host=localhost;Port=5433;Database=school_admission_test;Username=postgres;Password=postgres )
+services:
+  db-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: school_admission_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d school_admission_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tests:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    volumes:
+      - ./backend:/src:ro
+    environment:
+      TEST_DB_CONNECTION: "Host=db-test;Port=5432;Database=school_admission_test;Username=postgres;Password=postgres;Maximum Pool Size=50;Timeout=60"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    depends_on:
+      db-test:
+        condition: service_healthy
+    # Copy the source (without bin/obj) so your own build folders are never touched, then run the tests.
+    command:
+      - sh
+      - -c
+      - |
+        mkdir /work && cd /src && tar cf - --exclude=bin --exclude=obj . | tar xf - -C /work \
+        && cd /work/Tests && dotnet test --logger "console;verbosity=normal"
+
+  # Frontend unit tests (Vitest + Testing Library). Needs internet once to install the npm packages.
+  frontend-tests:
+    image: node:20-alpine
+    volumes:
+      - ./frontend:/src:ro
+    command:
+      - sh
+      - -c
+      - |
+        mkdir /work && cd /src && tar cf - --exclude=node_modules --exclude=dist . | tar xf - -C /work \
+        && cd /work && npm install && npm test
